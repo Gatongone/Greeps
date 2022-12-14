@@ -3150,6 +3150,77 @@ SourceNode.prototype.toStringWithSourceMap = function SourceNode_toStringWithSou
  */
 var SourceMapConsumer = sourceMapConsumer.SourceMapConsumer;
 
+const YELLOW = "#FEB570";
+const GREEN = "#6BE35E";
+const BLUE = "#7088FE";
+const RED = "#FE708C";
+const DEFAULT_SPAWN =
+{
+    name: "Spawn1"
+};
+const ROLE = {
+    Harvester:
+    {
+        name: "Harvester",
+        body: [WORK, CARRY, MOVE],
+    },
+    Upgrader:
+    {
+        name: "Upgrader",
+        body: [WORK, CARRY, MOVE],
+    },
+    Builder:
+    {
+        name: "Builder",
+        body: [WORK, CARRY, MOVE],
+    }
+};
+
+const log = {};
+log.spawns = function () {
+    console.log("[Log] Spawns:");
+    var index = 0;
+    for (var name in Game.spawns) {
+        console.log("- " + name);
+        index++;
+    }
+    return "count : " + index;
+};
+
+log.creeps = function () {
+    console.log("[Log] Spawns:");
+    var index = 0;
+    for (var name in Game.creeps) {
+        console.log("- " + name);
+        index++;
+    }
+    return "count : " + index;
+};
+
+log.color = function (color, msg) {
+    console.log("<text style=\"color: " + color + "\">" + msg + "</text>");
+};
+
+log.info = function (msg) {
+    console.log(msg);
+};
+
+log.error = function (msg) {
+    log.color(RED, msg);
+};
+
+log.warn = function (msg) {
+    log.color(YELLOW, msg);
+};
+
+log.action = function (msg) {
+    log.color(BLUE, msg);
+};
+
+log.success = function (msg) {
+    log.color(GREEN, msg);
+};
+
 let consumer = null;
 
 const getConsumer = function () {
@@ -3190,7 +3261,7 @@ const sourceMappedStackTrace = function (error) {
 };
 
 
-const errorMapper = function (next) {
+const error_tracer = function (next) {
     return () => {
         try {
             next();
@@ -3201,14 +3272,210 @@ const errorMapper = function (next) {
                     `Original stack tracer : <br>${_.escape(e.stack)}` :
                     `${_.escape(sourceMappedStackTrace(e))}`;
 
-                console.log(`<text style="color:#ef9a9a">${errorMessage}</text>`);
+                log.error(errorMessage);
             }
             else throw e
         }
     }
 };
 
-const loop = errorMapper(() => {
+const coroutine = {};
+coroutine.enumerators = [];
+coroutine.count = 0;
+coroutine.register = function (enumerator, verify) {
+
+    this.enumerators.push([enumerator, verify]);
+    this.count++;
+};
+coroutine.reason = function () {
+    for (var i = this.enumerators.length - 1; i >= 0; i--) {
+        var success = this.enumerators[i][1]();
+        if (success) {
+            this.enumerators[i][0]();
+            this.enumerators.splice(i, 1);
+        }
+    }
+};
+
+const action = {};
+action.spawn = {};
+action.cache = {};
+action.cache.harvester = {};
+
+const spawnCheck = function (spawnName) {
+    if (!Game.spawns[spawnName]) {
+        log.error("[Error] Spawn undefine. Spawn : " + spawnName);
+        return false;
+    }
+    return true;
+};
+
+action.spawn.creep = function (spawnName, creepName, bodys) {
+    if (spawnName == undefined) spawnName = DEFAULT_SPAWN.name;
+    var success = spawnCheck(spawnName);
+    if (!success) return "";
+
+    var roleName = creepName;
+    if (!Game.creeps[creepName]) {
+        if (!Game.spawns[spawnName].memory.creepId)
+            Game.spawns[spawnName].memory.creepId = 0;
+        creepName += "_" + ++Game.spawns[spawnName].memory.creepId;
+    }
+    success = Game.spawns[spawnName].spawnCreep(bodys, creepName, { memory: { role: roleName } });
+
+    if (success >= 0) {
+        log.action("[Factory] Creating creep...");
+        coroutine.register(
+            function () { log.success("[Factory] Creep created : " + creepName); },
+            function () { return Game.spawns[spawnName] != undefined && Game.spawns[spawnName].spawning == null },
+        );
+    }
+    else {
+        switch (success) {
+            case ERR_NOT_ENOUGH_ENERGY: log.error("[Error] Energy deficiency. Spawn : " + spawnName); break;
+            case ERR_BUSY: log.error("[Warning] Spawn is busy. Spawns : " + spawnName); break;
+            case ERR_NAME_EXISTS: log.error("[Warning] Creep exists. Creeps : " + creepName); break;
+            case ERR_INVALID_ARGS: log.error("[Warning] Args invalid. "); break;
+        }
+    }
+    return success;
+};
+
+action.spawn.harvester = function (spawnName) {
+    return action.spawn.creep(spawnName, ROLE.Harvester.name, ROLE.Harvester.body);
+};
+
+action.spawn.upgrader = function (spawnName) {
+    return action.spawn.creep(spawnName, ROLE.Upgrader.name, ROLE.Upgrader.body);
+};
+
+action.spawn.builder = function (spawnName) {
+    return action.spawn.creep(spawnName, ROLE.Builder.name, ROLE.Builder.body);
+};
+
+const utils = {};
+global.utils = utils;
+
+utils.coroutine = coroutine;
+utils.log = log;
+utils.action = action;
+
+const harvester = {
+    update: function (creep) {
+        if (creep.store.getFreeCapacity() > 0) {
+            var sources = creep.room.find(FIND_SOURCES);
+            if (creep.harvest(sources[0]) == ERR_NOT_IN_RANGE) {
+                creep.moveTo(sources[0], { visualizePathStyle: { stroke: '#ffaa00' } });
+            }
+        }
+        else {
+            var targets = creep.room.find(FIND_STRUCTURES, {
+                filter: (structure) => {
+                    return (structure.structureType == STRUCTURE_EXTENSION ||
+                        structure.structureType == STRUCTURE_SPAWN ||
+                        structure.structureType == STRUCTURE_TOWER) &&
+                        structure.store.getFreeCapacity(RESOURCE_ENERGY) > 0;
+                }
+            });
+            if (targets.length > 0) {
+                if (creep.transfer(targets[0], RESOURCE_ENERGY) == ERR_NOT_IN_RANGE) {
+                    creep.moveTo(targets[0], { visualizePathStyle: { stroke: '#ffffff' } });
+                }
+            }
+        }
+    }
+};
+
+const upgrader = {
+
+    update: function (creep) {
+        if (creep.store[RESOURCE_ENERGY] == 0) {
+            creep.memory.upgrading = false;
+            creep.say('🔄 harvest');
+        }
+        if (!creep.memory.upgrading && creep.store.getFreeCapacity() == 0) {
+            creep.memory.upgrading = true;
+            creep.say('⚡ upgrade');
+        }
+
+        if (creep.memory.upgrading && creep.upgradeController(creep.room.controller) == ERR_NOT_IN_RANGE) {
+            {
+                creep.moveTo(creep.room.controller, { visualizePathStyle: { stroke: '#ffffff' } });
+            }
+        }
+        else {
+            var sources = creep.room.find(FIND_SOURCES);
+            if (creep.harvest(sources[0]) == ERR_NOT_IN_RANGE) {
+                creep.moveTo(sources[0], { visualizePathStyle: { stroke: '#ffaa00' } });
+            }
+        }
+    }
+};
+
+const builder = {
+
+    update: function (creep) {
+        if (creep.store[RESOURCE_ENERGY] == 0) {
+            creep.memory.building = false;
+            creep.say('🔄 harvest');
+        }
+        if (!creep.memory.building && creep.store.getFreeCapacity() == 0) {
+            creep.memory.building = true;
+            creep.say('🚧 build');
+        }
+        var targets = creep.room.find(FIND_CONSTRUCTION_SITES);
+        if (creep.memory.building && targets.length) {
+            console.log(target);
+            if (creep.build(targets[0]) == ERR_NOT_IN_RANGE) {
+                creep.moveTo(targets[0], { visualizePathStyle: { stroke: '#ffffff' } });
+            }
+        }
+        else {
+            var sources = creep.room.find(FIND_SOURCES);
+            //Get sources
+            if (creep.harvest(sources[0]) == ERR_NOT_IN_RANGE && creep.store.getFreeCapacity() > 0) {
+                creep.moveTo(sources[0], { visualizePathStyle: { stroke: '#ffaa00' } });
+            }
+            //Back to spawner
+            else {
+                targets = creep.room.find(FIND_STRUCTURES, {
+                    filter: (structure) => {
+                        return (structure.structureType == STRUCTURE_EXTENSION || structure.structureType == STRUCTURE_SPAWN)
+                    }
+                });
+                if (targets.length > 0) {
+                    if (creep.transfer(targets[0], RESOURCE_ENERGY) == ERR_NOT_IN_RANGE) {
+                        creep.moveTo(targets[0], { visualizePathStyle: { stroke: '#ffffff' } });
+                    }
+                }
+            }
+        }
+    }
+};
+
+const role =
+{
+    update: function (creep) {
+        switch (creep.memory.role) {
+            case ROLE.Harvester.name: harvester.update(creep); break;
+            case ROLE.Upgrader.name: upgrader.update(creep); break;
+            case ROLE.Builder.name: builder.update(creep); break;
+        }
+    }
+};
+
+const procedure = function () {
+    utils.coroutine.reason();
+    for (var creepName in Game.creeps) {
+        var creep = Game.creeps[creepName];
+        if (creep.memory.role) {
+            role.update(creep);
+        }
+    }
+};
+
+const loop = error_tracer(() => {
+    procedure();
 });
 
 exports.loop = loop;

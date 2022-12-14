@@ -1,4 +1,5 @@
 import { SourceMapConsumer } from 'source-map'
+import { log } from '../utils/log'
 
 let consumer = null
 
@@ -40,7 +41,7 @@ const sourceMappedStackTrace = function (error) {
 }
 
 
-export const errorMapper = function (next) {
+export const error_tracer = function (next) {
     return () => {
         try {
             next()
@@ -51,7 +52,7 @@ export const errorMapper = function (next) {
                     `Original stack tracer : <br>${_.escape(e.stack)}` :
                     `${_.escape(sourceMappedStackTrace(e))}`
 
-                console.log(`<text style="color:#ef9a9a">${errorMessage}</text>`)
+                log.error(errorMessage);
             }
             else throw e
         }
